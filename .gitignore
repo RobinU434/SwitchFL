@@ -3,3 +3,5 @@
 venv/
 experiments/
 .vscode/
+.venv/
+__pycache__/

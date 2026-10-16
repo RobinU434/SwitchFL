@@ -15,6 +15,7 @@ def build_standard_async_env(
     grid_mode: bool = True,
     render_mode: str = None,
     seed: int = None,
+    malfunction_generator=None,
 ):
     # Apply comprehensive seeding before creating any generators
     if seed is not None:
@@ -32,6 +33,7 @@ def build_standard_async_env(
         ),
         line_generator=sparse_line_generator(seed=seed),  # Seed controls train placement
         number_of_agents=num_trains,
+        malfunction_generator=malfunction_generator,  # None: no malfunctions
     )
 
     env = ASyncSwitchEnv(rail_env, render_mode=render_mode)

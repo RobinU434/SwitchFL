@@ -6,13 +6,9 @@ This script tests whether the rail graph transitions match actual train movement
 by comparing rail graph predictions with Flatland's ground truth simulation.
 """
 
-import sys
 import traceback
 from flatland.envs.rail_env import RailEnvActions
 from flatland.envs.step_utils.states import TrainState
-
-# Add the parent directory to sys.path so we can import switchfl
-sys.path.insert(0, '/home/robin/projects/RL/DistrQLearn/project/environment')
 
 from switchfl.utils.build_env import build_standard_async_env
 
@@ -171,7 +167,7 @@ def test_direction_mapping():
     
     try:
         env = build_standard_async_env(
-            height=15, width=15, max_num_cities=2, num_trains=1, 
+            height=25, width=25, max_num_cities=2, num_trains=1, 
             grid_mode=True, seed=456
         )
     except Exception as e:

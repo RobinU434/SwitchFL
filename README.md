@@ -63,12 +63,14 @@ Each switch is treated as an agent with its own observation and decision-making 
 
 ## Installation
 
-we opted for poetry as the package-management system: 
+We use [uv](https://docs.astral.sh/uv/) for package management:
 ```bash
-git clone https://github.com/yourusername/switchfl.git
-cd switchfl
-poetry install
+git clone https://github.com/RobinU434/SwitchFL.git
+cd SwitchFL
+uv sync --all-extras
 ```
+
+SwitchFL requires stock `flatland-rl==4.2.2`. If you previously copied the old `flatland_patch/` files into a uv-managed venv, they also overwrote uv's hard-linked cache entry; run `uv cache clean flatland-rl && uv sync --reinstall-package flatland-rl` once.
 
 Ensure you have the following installed:
 

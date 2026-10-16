@@ -132,6 +132,10 @@ class RailNetwork:
 
         self.semaphores: Dict[PortId, tuple] = {}
 
+        self._transition_undo: Dict[int, Tuple[PortId, PortId, Dict[PortId, list | None]]] = {}
+        """per train: (prev port, next port, semaphore entries before the last transition_train) so that
+        the transition can be undone if Flatland stops the train before it enters the switch"""
+
     def reset(self):
         # reset all switches
         for _, switch in self.switch_network.nodes.data("switch_cls"):
@@ -145,6 +149,10 @@ class RailNetwork:
         self._train2next_port_dist: Dict[int, int] = {
             handle: None for handle in self._train2next_port_dist.keys()
         }
+
+        self._train_prev_port = {handle: None for handle in self._train_prev_port.keys()}
+        self._train_source_port = {handle: None for handle in self._train_source_port.keys()}
+        self._transition_undo = {}
 
         self.semaphores = {}
 
@@ -266,8 +274,21 @@ class RailNetwork:
 
         # find next switch with next port
         next_switch, target_port = self.get_neighbor_switch(out_port)
+        # remember the state before the transition, see rollback_transition()
+        semaphores_before = {p: list(v) for p, v in self.semaphores.items()}
+        prev_port_before = self._train_prev_port[train.handle]
+        next_port_before = self._train2next_port[train.handle]
         # assign the semaphores
         self.transition_semaphore(in_port, out_port, target_port, train, next_switch)
+        self._transition_undo[train.handle] = (
+            prev_port_before,
+            next_port_before,
+            {
+                p: semaphores_before.get(p)
+                for p in set(semaphores_before) | set(self.semaphores)
+                if semaphores_before.get(p) != self.semaphores.get(p)
+            },
+        )
         # the next port in self._train2next_port
         self._train_source_port[train.handle] = in_port
         self.set_trains_next_port(train, target_port)
@@ -276,6 +297,37 @@ class RailNetwork:
             f"num rail segments to next port: {self.get_port_distance(out_port, target_port)} from {out_port} to {target_port}"
         )
         return next_switch, target_port
+
+    def rollback_transition(self, train: TrainAgent) -> bool:
+        """Undo the last transition_train() of a train that Flatland stopped in front of the switch.
+
+        This happens when several trains try to enter the same cell in the same Flatland step: Flatland
+        lets only one of them move. The stopped train is still in front of the switch, so its previous and
+        next port and its semaphores are restored to the state before the switch decided. Semaphore entries
+        that another train has taken over since then are left alone.
+
+        Returns:
+            bool: False if there was no transition to undo
+        """
+        undo = self._transition_undo.pop(train.handle, None)
+        if undo is None:
+            return False
+        prev_port, next_port, semaphores_before = undo
+        self._train_prev_port[train.handle] = prev_port
+        self._train2next_port[train.handle] = next_port
+        for port, entry in semaphores_before.items():
+            current = self.semaphores.get(port)
+            if current is not None and current[0] != train.handle:
+                continue
+            if entry is None:
+                self.semaphores.pop(port, None)
+            else:
+                self.semaphores[port] = list(entry)
+        return True
+
+    def commit_transition(self, train: TrainAgent):
+        """The train entered the switch, so its last transition can no longer be undone."""
+        self._transition_undo.pop(train.handle, None)
 
     def map_direction(self, port):
         """map port to flatland direction"""
@@ -500,17 +552,17 @@ class RailNetwork:
         """         
         return self._train_prev_port[train.handle]
     
-    def get_rail_pieces_between_ports(self, source_node: NodeId, target_node: NodeId) -> List[Tuple[int, int]]:
-        """Get the rail pieces between two switch nodes.
+    def get_rail_pieces_between_ports(self, source_port: PortId, target_port: PortId) -> List[Tuple[int, int]]:
+        """Get the rail pieces between two ports, e.g. a train's previous (out) port and its next (in) port.
 
         Args:
-            source_node (NodeId): The source switch node.
-            target_node (NodeId): The target switch node.
+            source_port (PortId): out port of the switch the train left
+            target_port (PortId): in port of the switch the train will enter next
 
         Returns:
-            List[Tuple[int, int]]: A list of rail piece coordinates between the two nodes.
+            List[Tuple[int, int]]: rail cells between the two ports, empty if they are not directly connected
         """
-        edge_data = self.rail_graph.get_edge_data(source_node, target_node)
+        edge_data = self.rail_graph.get_edge_data(source_port, target_port)
         if edge_data is None:
             return []
         rail_nodes = edge_data.get("rail_nodes", [])
@@ -539,6 +591,21 @@ class RailNetwork:
         for port in switch.get_port_nodes():
             res[port] = self.get_neighbor_switch(port)[1]
         return res
+
+    def get_adjacent_switch_pairs(self) -> List[Tuple[NodeId, NodeId]]:
+        """Pairs of switches whose cells touch directly (no rail cell between them).
+
+        Returns:
+            List[Tuple[NodeId, NodeId]]: sorted pairs, each pair listed once
+        """
+        pairs = set()
+        for switch_id, switch in self.switches:
+            for port, (neighbor_id, neighbor_port) in switch.port2neighbor.items():
+                if neighbor_id is None or self.get_switch_on_position(neighbor_id) is None:
+                    continue
+                if self.get_port_distance(port, neighbor_port) == 0:
+                    pairs.add(tuple(sorted((switch_id, neighbor_id))))
+        return sorted(pairs)
 
     def get_port_distance(self, port1: PortId, port2: PortId) -> int | None:
         """Get the number of rail segments between two ports.

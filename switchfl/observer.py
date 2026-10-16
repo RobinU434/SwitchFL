@@ -35,15 +35,13 @@ def compute_delay(rail_env: RailEnv, train: TrainAgent, position, direction, ear
 
     row, col = position
 
-    min_dist_to_target = rail_env.distance_map.get(rail_env.agents)[
+    min_dist_to_target = rail_env.distance_map.get()[
         train.handle, row, col, direction
     ]
     
     if np.isinf(min_dist_to_target):
         raise ValueError("Infinite distance to target encountered.")
 
-    # shortest_path = rail_env.distance_map.get_shortest_paths(max_depth=None, agents = rail_env.agents, agent_handle=train.handle)[train.handle]
-    # min_dist_to_target = len(shortest_path) - 1
     
     if earliest_departure:
         delay = train.earliest_departure - train.latest_arrival + min_dist_to_target
@@ -51,6 +49,30 @@ def compute_delay(rail_env: RailEnv, train: TrainAgent, position, direction, ear
         delay = rail_env._elapsed_steps - train.latest_arrival + min_dist_to_target
     # assume you are moving with max speed=1
     return delay
+
+def reachable_action_mask(switch: _Switch, train: TrainAgent, rail_env: RailEnv, rail_network: RailNetwork) -> np.ndarray:
+    """Masks rail actions after which the train can no longer reach its target.
+
+    Leaving the switch through out-port p puts the train on the cell rail_prev_node[p],
+    heading in map_direction(p). Without this mask a train can be routed onto a branch
+    with infinite distance to its target and compute_delay raises.
+
+    Args:
+        switch (_Switch): the switch the train is in front of
+        train (TrainAgent): the active train
+        rail_env (RailEnv): the flatland environment
+        rail_network (RailNetwork): the rail network
+
+    Returns:
+        np.ndarray: 1 if the action keeps the target reachable, else 0 (n_rail_actions, )
+    """
+    distance_map = rail_env.distance_map.get()
+    mask = []
+    for _, out_port in switch.action_outcomes:
+        row, col = rail_network.rail_graph.nodes[out_port]["rail_prev_node"]
+        direction = rail_network.map_direction(out_port)
+        mask.append(int(np.isfinite(distance_map[train.handle, row, col, direction])))
+    return np.array(mask, dtype=np.int8)
 
 def check_port_blocked(next_port, out_port, train_agent_handle, rail_network: RailNetwork) -> bool:
     """ Checks if the given port is blocked by a semaphore.
@@ -274,15 +296,18 @@ class StandardObserver(_Observer):
         self.logger.debug(f"next port for each train: {rail_network._train2next_port}")
         self.logger.debug(f"current agent: {agent} with position {switch.id}")
         train_counter = 0  # debugging
-        active_train_handle = env.active_train
-        train = env.rail_env.agents[active_train_handle]
+        # only the selected switch has a train in front of it. Every other switch (and every switch
+        # outside agent_iter()) gets a "no train" observation: targets and delays -1, only STOP allowed
+        has_train = env.active_train is not None and agent == env.agent_selection
+        active_train_handle = env.active_train if has_train else -1
+        train = env.rail_env.agents[active_train_handle] if has_train else None
         
         for port in switch.get_port_nodes():  # Get port IDs of this node
             self.logger.debug(f"port {port} coming from cell {switch.switch_graph.nodes.data('rail_prev_node')[port]}")
 
             _, next_port = rail_network.get_neighbor_switch(port)
 
-            port_blocked = check_port_blocked(next_port, port, train.handle, rail_network)
+            port_blocked = check_port_blocked(next_port, port, active_train_handle, rail_network)
             if port_blocked:
                 semaphore.append(0)
             else:
@@ -290,7 +315,7 @@ class StandardObserver(_Observer):
 
             self.logger.debug(f"Semaphore: {semaphore}")
 
-            if train_at_ports[active_train_handle] == port:
+            if has_train and train_at_ports[active_train_handle] == port:
                 current_port = port
                 self.logger.debug(f"train at port {port}")
                 delay.append(
@@ -302,12 +327,8 @@ class StandardObserver(_Observer):
                 delay.append(-1)
                 target.extend([-1, -1])  # 2D coordinates
 
-        if (
-            train_counter == 0
-        ):  
-
-
-            self.logger.fatal       (
+        if has_train and train_counter == 0:
+            self.logger.fatal(
                 "Bug detected. No train detected at active switch. Check information in RailNetwork."
             )
 
@@ -319,7 +340,17 @@ class StandardObserver(_Observer):
         semaphore_int = [bool2int(semaphore)]
         reduced_obs = np.concatenate([node_id, semaphore_int, target[target != -1], delay[delay != -1], [active_train_handle], [env.rail_env._elapsed_steps]], dtype=np.int64)
 
-        info = {"action_mask": switch.get_action_mask(current_port, semaphore), "active_train": active_train_handle, 
+        if has_train:
+            action_mask = switch.get_action_mask(current_port, semaphore)
+            action_mask[:-1] &= reachable_action_mask(switch, train, env.rail_env, rail_network)
+            if env.stop_forced(switch.id, active_train_handle):
+                # another train enters or occupies this switch cell, or the train is broken down
+                action_mask[:-1] = 0
+        else:
+            action_mask = np.zeros(switch.n_actions + 1, dtype=np.int8)
+            action_mask[-1] = 1
+
+        info = {"action_mask": action_mask, "active_train": active_train_handle,
                 "reduced_obs": reduced_obs}
         return observation, info
     

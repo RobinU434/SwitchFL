@@ -3,7 +3,7 @@ Test suite to verify consistency between rail graph transitions and actual train
 
 This module contains comprehensive tests to check for discrepancies between the rail 
 transition graph representation and the actual position of trains using Flatland's 
-`rail_env.rail.check_action_on_agent` function as ground truth.
+`rail_env.rail.check_action_on_agent` function (via `switchfl.utils.flatland_compat.apply_action`) as ground truth.
 
 Run with: python -m pytest test/test_transition.py -v
 """
@@ -30,6 +30,7 @@ from flatland.envs.step_utils.states import TrainState
 
 from switchfl.rail_network import RailNetwork
 from switchfl.utils.build_env import build_standard_async_env
+from switchfl.utils.flatland_compat import apply_action
 
 
 class TestTransitionConsistency:
@@ -143,9 +144,8 @@ class TestTransitionConsistency:
         # Test each switch and all its possible actions
         for switch_id, switch_data in rail_network.switch_network.nodes(data=True):
             switch_cls = switch_data['switch_cls']
-            action_space = switch_cls.get_action_space()
-            
-            for action_idx in range(action_space.n):
+            # rail actions only: the last index of the action space is STOP, which has no outcome
+            for action_idx in range(switch_cls.n_actions):
                 try:
                     self._test_switch_action_consistency(
                         rail_env, rail_network, switch_id, switch_cls, action_idx
@@ -175,9 +175,8 @@ class TestTransitionConsistency:
                     
                 # Simulate next step to see if train reaches a switch
                 next_action = RailEnvActions.MOVE_FORWARD
-                (new_cell_valid, new_direction, new_position, 
-                 transition_valid, preprocessed_action) = rail_env.rail.check_action_on_agent(
-                    next_action, train.position, train.direction
+                new_position, _, _ = apply_action(
+                    rail_env.rail, next_action, train.position, train.direction
                 )
                 
                 next_switch = rail_network.get_switch_on_position(new_position)
@@ -207,12 +206,11 @@ class TestTransitionConsistency:
             return  # Skip trains not on grid
 
         # Use Flatland's ground truth simulation
-        (new_cell_valid, new_direction, new_position, 
-         transition_valid, preprocessed_action) = rail_env.rail.check_action_on_agent(
-            action, train.position, train.direction
+        new_position, _, transition_valid = apply_action(
+            rail_env.rail, action, train.position, train.direction
         )
 
-        if not new_cell_valid or not transition_valid:
+        if not transition_valid:
             return  # Skip invalid moves
 
         # Check if the predicted position matches any expected position in rail graph
@@ -283,12 +281,11 @@ class TestTransitionConsistency:
                 current_dir = train.direction
                 
                 for expected_action in expected_actions:
-                    (new_cell_valid, new_direction, new_position,
-                     transition_valid, preprocessed_action) = rail_env.rail.check_action_on_agent(
-                        expected_action, current_pos, current_dir
+                    new_position, new_direction, transition_valid = apply_action(
+                        rail_env.rail, expected_action, current_pos, current_dir
                     )
                     
-                    if not new_cell_valid or not transition_valid:
+                    if not transition_valid:
                         break  # Stop if move becomes invalid
                         
                     # Update position for next iteration

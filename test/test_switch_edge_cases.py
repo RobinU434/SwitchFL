@@ -26,8 +26,8 @@ class TestSwitchEdgeCases:
     def high_density_env(self):
         """Create a high-density environment likely to cause simultaneous arrivals."""
         env = build_standard_async_env(
-            height=25,
-            width=25,
+            height=35,
+            width=35,
             max_num_cities=5,
             num_trains=8,
             max_rails_between_cities=4,
@@ -42,8 +42,8 @@ class TestSwitchEdgeCases:
     def congested_env(self):
         """Create an environment designed to maximize congestion."""
         env = build_standard_async_env(
-            height=15,
-            width=15,
+            height=30,
+            width=30,
             max_num_cities=3,
             num_trains=6,
             max_rails_between_cities=2,
@@ -338,30 +338,9 @@ class TestSwitchEdgeCases:
                 simultaneous[switch_id] = trains
         return simultaneous
 
-    def _find_all_neighbor_pairs(self, env) -> List[tuple]:
-        """Find all pairs of neighboring switches in the environment."""
-        neighbor_pairs = []
-        
-        try:
-            switches = list(env.rail_network.switches.keys())
-            
-            for i, switch1 in enumerate(switches):
-                for switch2 in switches[i+1:]:
-                    if self._are_switches_neighbors(env, switch1, switch2):
-                        neighbor_pairs.append((switch1, switch2))
-        except Exception as e:
-            print(f"Error finding neighbor pairs: {e}")
-        
-        return neighbor_pairs
-
-    def _are_switches_neighbors(self, env, switch1_id, switch2_id) -> bool:
-        """Check if two switches are direct neighbors."""
-        try:
-            # This is a simplified check - in practice you'd check the rail network topology
-            rail_pieces = env.rail_network.get_rail_pieces_between_ports(switch1_id, switch2_id)
-            return len(rail_pieces) <= 3  # Allow for some intermediate rail pieces
-        except Exception:
-            return False
+    def _find_all_neighbor_pairs(self, env):
+        """Find pairs of directly neighboring switches (no rail cell in between)."""
+        return env.rail_network.get_adjacent_switch_pairs()
 
     def _analyze_rapid_transitions(self, history: Dict[int, List[Dict]]) -> List[Dict]:
         """Analyze train movement history to find rapid transitions."""

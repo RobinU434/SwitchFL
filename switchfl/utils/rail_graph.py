@@ -9,21 +9,22 @@ import matplotlib.colors as mcolors
 import matplotlib as mpl
 from itertools import combinations
 
+from switchfl.utils.flatland_compat import get_full_transitions, get_transitions
+
 
 def create_rail_graph(env: RailEnv, cmap="tab20") -> nx.Graph:
     graph = nx.Graph()
     cmap = mpl.colormaps[cmap]
 
-    get_txs = env.rail.get_transitions
     # for all the possible combinations of (row, col, dir)
     for row, col, dir in tqdm(
         product(range(env.height), range(env.width), range(4)),
         total=env.height * env.width * 4,
     ):
         # [North, East, South, West]
-        if bin(env.rail.get_full_transitions(row, col)).count("1") == 0:
+        if bin(get_full_transitions(env.rail, row, col)).count("1") == 0:
             continue
-        for dir_idx, tx in enumerate(get_txs(((row, col), dir))): # get transition
+        for dir_idx, tx in enumerate(get_transitions(env.rail, (row, col), dir)): # get transition
             # tx = 0 if there is no transition, tx = 1 if there is a transition
             if tx == 0:
                 continue
@@ -57,7 +58,7 @@ def create_rail_graph(env: RailEnv, cmap="tab20") -> nx.Graph:
                     )  # convert image pixel space to plotting space
                     graph.add_node(
                         (row, col),
-                        transition=bin(env.rail.get_full_transitions(row, col))[
+                        transition=bin(get_full_transitions(env.rail, row, col))[
                             2:
                         ].zfill(16),
                         node_color=node_color,
@@ -71,7 +72,7 @@ def create_rail_graph(env: RailEnv, cmap="tab20") -> nx.Graph:
                     graph.add_node(
                         (next_row, next_col),
                         transition=bin(
-                            env.rail.get_full_transitions(next_row, next_col)
+                            get_full_transitions(env.rail, next_row, next_col)
                         )[2:].zfill(16),
                         node_color=node_color,
                         position=pos,

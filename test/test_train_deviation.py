@@ -19,6 +19,7 @@ from unittest.mock import patch, MagicMock
 from flatland.envs.rail_env import RailEnvActions
 
 from switchfl.utils.build_env import build_standard_async_env
+from switchfl.utils.naming import switch_id2name
 
 
 class TestTrainDeviation:
@@ -28,8 +29,8 @@ class TestTrainDeviation:
     def small_env(self):
         """Create a small environment for controlled testing."""
         env = build_standard_async_env(
-            height=15,
-            width=15,
+            height=25,
+            width=25,
             max_num_cities=2,
             num_trains=2,
             max_rails_between_cities=1,
@@ -44,8 +45,8 @@ class TestTrainDeviation:
     def medium_env(self):
         """Create a medium environment with more trains and complexity."""
         env = build_standard_async_env(
-            height=15,
-            width=15,
+            height=25,
+            width=25,
             max_num_cities=3,
             num_trains=4,
             max_rails_between_cities=2,
@@ -60,8 +61,8 @@ class TestTrainDeviation:
     def dense_env(self):
         """Create a dense environment with many trains and close switches."""
         env = build_standard_async_env(
-            height=20,
-            width=20,
+            height=30,
+            width=30,
             max_num_cities=4,
             num_trains=6,
             max_rails_between_cities=3,
@@ -73,44 +74,40 @@ class TestTrainDeviation:
         return env
 
     def test_force_train_deviation_by_corrupting_position(self, small_env):
-        """Test that corrupts a train's position to provoke deviation error."""
+        """Corrupt the position of a train that passed a switch: the deviation check has to log an error."""
         env = small_env
-        
-        # Capture log messages
+        rng = np.random.default_rng(0)
+        rail_network = env.rail_network
+
+        def train_between_switches():
+            for train in env.rail_env.agents:
+                if (train.position is not None
+                        and rail_network.get_trains_prev_port(train) is not None
+                        and rail_network.get_trains_next_port(train) is not None):
+                    return train
+            return None
+
+        # let switches decide (masked random actions) until a train has left a switch
+        target_train = None
+        for agent in env.agent_iter():
+            env.observe(agent)
+            env.step(int(rng.choice(np.flatnonzero(env.infos[agent]["action_mask"]))))
+            target_train = train_between_switches()
+            if target_train is not None:
+                break
+        assert target_train is not None, "no train passed a switch"
+
         with patch.object(env.logger, 'error') as mock_logger:
-            # Move trains to get them active
-            self._move_trains_until_active(env, max_steps=10)
-            
-            if len(env.rail_env.agents) > 0:
-                # Find a train that has planned actions
-                target_train = None
-                for train in env.rail_env.agents:
-                    if (hasattr(train, 'position') and train.position is not None and
-                        len(env.train_action_plan.get(train.handle, [])) > 0):
-                        target_train = train
-                        break
-                
-                if target_train is not None:
-                    # Corrupt the train's position to trigger deviation error
-                    original_position = target_train.position
-                    # Move train to an invalid position not on its planned path
-                    target_train.position = (0, 0)  # Likely invalid position
-                    
-                    # Execute action planning check
-                    env._check_action_execution()
-                    
-                    # Restore original position
-                    target_train.position = original_position
-                    
-                    # Check if deviation error was logged
-                    mock_logger.assert_called()
-                    args, kwargs = mock_logger.call_args
-                    assert "deviated from planned path" in args[0]
-                    print(f"✓ Successfully provoked deviation error for train {target_train.handle}")
-                else:
-                    pytest.skip("No suitable train found with planned actions")
-            else:
-                pytest.skip("No trains available in environment")
+            env._check_action_execution()
+            assert not mock_logger.called, "the check must not fire on a valid state"
+
+            original_position = target_train.position
+            target_train.position = (0, 0)  # not a rail cell
+            env._check_action_execution()
+            target_train.position = original_position
+
+            mock_logger.assert_called()
+            assert "deviated from planned path" in mock_logger.call_args[0][0]
 
     def test_train_deviation_through_invalid_action_sequence(self, medium_env):
         """Test deviation by executing conflicting action sequences."""
@@ -121,9 +118,11 @@ class TestTrainDeviation:
             active_agents = self._get_active_agents(env, max_attempts=20)
             
             if len(active_agents) > 0:
-                # Execute a valid action first
-                valid_action = 0  # Assume first action is valid
-                
+                # Select the next (switch, train) pair and take a valid action first
+                agent = next(env.agent_iter())
+                env.observe(agent)
+                valid_action = int(np.flatnonzero(env.infos[agent]["action_mask"])[0])
+
                 # Manipulate train action plan to create inconsistency
                 if len(env.rail_env.agents) > 0:
                     train = env.rail_env.agents[0]
@@ -221,8 +220,8 @@ class TestTrainDeviation:
                 
                 # Test actions that involve transitions between neighbor switches
                 for switch1_id, switch2_id in neighbor_pairs[:3]:  # Test first 3 pairs
-                    switch1_name = env.rail_network.switch_id2name(switch1_id)
-                    switch2_name = env.rail_network.switch_id2name(switch2_id)
+                    switch1_name = switch_id2name(switch1_id)
+                    switch2_name = switch_id2name(switch2_id)
                     
                     print(f"Testing neighbor switches: {switch1_name} <-> {switch2_name}")
                     
@@ -373,35 +372,9 @@ class TestTrainDeviation:
                 break
         return []
 
-    def _find_neighbor_switch_pairs(self, env) -> List[Tuple]:
-        """Find pairs of directly neighboring switches."""
-        neighbor_pairs = []
-        
-        try:
-            # Get all switches
-            switches = list(env.rail_network.switches.keys())
-            
-            # Check each pair for direct connection
-            for i, switch1 in enumerate(switches):
-                for switch2 in switches[i+1:]:
-                    # Check if switches are neighbors in the rail network
-                    if self._are_switches_neighbors(env, switch1, switch2):
-                        neighbor_pairs.append((switch1, switch2))
-        
-        except Exception as e:
-            print(f"Error finding neighbor pairs: {e}")
-        
-        return neighbor_pairs
-
-    def _are_switches_neighbors(self, env, switch1_id, switch2_id) -> bool:
-        """Check if two switches are direct neighbors."""
-        try:
-            # Get the rail pieces between switches
-            rail_pieces = env.rail_network.get_rail_pieces_between_ports(switch1_id, switch2_id)
-            # If rail pieces list is empty or very short, they're likely neighbors
-            return len(rail_pieces) <= 2
-        except Exception:
-            return False
+    def _find_neighbor_switch_pairs(self, env):
+        """Find pairs of directly neighboring switches (no rail cell in between)."""
+        return env.rail_network.get_adjacent_switch_pairs()
 
     def _test_neighbor_switch_transition(self, env, switch1_id, switch2_id):
         """Test transition between neighboring switches."""

@@ -36,7 +36,8 @@ class TargetSpace(MultiDiscrete):
     def contains(self, x):
         x = np.array(x)
         if len(x.shape) == 1:
-            x = x.reshape(2, -1).T
+            # flat layout is [row_0, col_0, row_1, col_1, ...]
+            x = x.reshape(-1, 2)
         if x.shape != (self.n_ports, 2):
             return False
         return np.all(
@@ -61,7 +62,7 @@ class MultiDiscreteSwitchObsSpace(Space):
         n_delay_levels: int = 3,
         seed=None,
     ):
-        n_dims = n_gaits + (n_gaits * 2) + n_gaits
+        n_dims = 2 + n_gaits + (n_gaits * 2) + n_gaits  # node id, semaphores, targets, delays
         shape = (n_dims,)
         dtype = int
         super().__init__(shape, dtype, seed)
@@ -70,6 +71,10 @@ class MultiDiscreteSwitchObsSpace(Space):
         self.rail_grid_shape = rail_grid_shape
         self.n_delay_levels = n_delay_levels
 
+        # position of the switch in the rail grid
+        self.node_space = spaces.MultiDiscrete(
+            np.array(self.rail_grid_shape), seed=seed, dtype=np.int64
+        )
         self.station_space = TargetSpace(
             height=self.rail_grid_shape[0],
             width=self.rail_grid_shape[1],
@@ -91,6 +96,7 @@ class MultiDiscreteSwitchObsSpace(Space):
     def sample(self):
         sample = np.concatenate(
             [
+                self.node_space.sample(),
                 self.semaphore_space.sample(),
                 self.station_space.sample().flatten(),
                 self.delay_space.sample(),
@@ -107,12 +113,16 @@ class MultiDiscreteSwitchObsSpace(Space):
             return False
 
         indices = [
+            self.node_space.shape[0],
             self.semaphore_space.shape[0],
             self.station_space.shape[0],
             self.delay_space.shape[0],
         ]
-        semaphore, stations, delay = np.split(x, np.cumsum(indices))[:-1]
+        node_id, semaphore, stations, delay = np.split(x, np.cumsum(indices))[:-1]
         # break it up
+        if not self.node_space.contains(node_id):
+            logging.debug(f"node space does not contain: {node_id}")
+            return False
         if not self.semaphore_space.contains(semaphore):
             logging.debug(f"semaphore space does not contain: {semaphore}")
             return False
@@ -133,13 +143,15 @@ class MultiDiscreteSwitchObsSpace(Space):
     def human_format(self, sample: np.ndarray) -> Dict[str, np.ndarray]:
         assert self.contains(sample)
         indices = [
+            self.node_space.shape[0],
             self.semaphore_space.shape[0],
             self.station_space.shape[0],
             self.delay_space.shape[0],
         ]
-        semaphore, stations, delay = np.split(sample, np.cumsum(indices))[:-1]
+        node_id, semaphore, stations, delay = np.split(sample, np.cumsum(indices))[:-1]
 
         return {
+            "node_id": node_id,
             "semaphore": semaphore,
             "train_targets": stations.reshape(-1, 2),
             "delay": delay,

@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Any
 from switchfl.observer import compute_delay
+from switchfl.utils.flatland_compat import apply_action
 from flatland.envs.rail_env import RailEnvActions
 import numpy as np
 
@@ -40,16 +41,8 @@ class StandardRewardFunction(_RewardFunction):
 
         for action in train_actions:
             if action != RailEnvActions.STOP_MOVING:
-                (
-                    _,
-                    (new_position,
-                    new_direction),
-                    _,
-                    _,
-                ) = self.rail_env.rail.check_action_on_agent(
-                    action,
-                    ((new_position),
-                    new_direction)
+                new_position, new_direction, _ = apply_action(
+                    self.rail_env.rail, action, new_position, new_direction
                 )
 
         curr_delay = compute_delay(self.rail_env, train, new_position, new_direction)

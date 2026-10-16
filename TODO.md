@@ -1,0 +1,33 @@
+# TODO
+
+Read `CLAUDE.md` first, especially the Flatland section. Setup:
+
+```bash
+uv sync --all-extras
+uv run pytest test/ -q -W ignore   # expected: 121 passed
+```
+
+The working tree contains uncommitted changes. Ask the user before committing or pushing.
+
+Done: the action mask forbidding entry into a switch cell another train enters or occupies (and rail actions for broken-down trains), the observation space covering the node id, the formerly skipped tests, `test/test_learning_readiness.py`, the `flatland_patch/` removal and the agent re-sort removal, the restored path-deviation check with a complete rollback of transitions cancelled by Flatland cell conflicts, the reachability action mask, the pinned rail (`_FrozenRailGenerator`), `switchfl/utils/flatland_compat.py`, the "no train" observation, the test-suite repair and the `SwitchCore` decision-event interface.
+
+## 1. Adapters (only when needed)
+
+`switchfl/core.py` (`SwitchCore`) is done. Still open: an RLlib `MultiAgentEnv` adapter on top of it (use sub-rounds when one switch has two trains in the same tick), and making `ASyncSwitchEnv` pass more of `pettingzoo.test.api_test`.
+
+## 2. Open decisions for the user
+
+- Semaphore propagation along forced routes: `transition_semaphore()` reserves the out-port, the next in-port and, if the next switch offers only one way on, one more edge. A train entering a chain of n switches without an alternative exit should reserve the whole chain (head-on deadlocks otherwise). Under investigation.
+
+## 3. Later
+
+- In-tick ordering: pairs in one tick are processed in train-handle order, and earlier pairs reserve semaphores first.
+- Q-routing spec in `docs/q_routing.md`. Implementation only after the env is stable.
+- One env per process on the same map. Threads are unsafe because `set_seed` uses the global RNGs.
+- Port to Flatland 4.3+ after the next release (`flatland_compat.py`, then the train attributes).
+
+## 4. Small cleanups
+
+- `requirements.txt` is stale (`flatland-rl==4.0.3`): delete it, or regenerate it from `uv export`.
+- Remove the dead per-switch `_Switch.semaphores` / `block_port` / `free_port` in `switch_agents.py` if nothing uses them any more (check with grep first).
+- `switchfl/README.md` predates the STOP action and the global semaphore redesign. Update the observation and action descriptions.

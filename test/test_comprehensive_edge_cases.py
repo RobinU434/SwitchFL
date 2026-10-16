@@ -397,29 +397,9 @@ class TestComprehensiveEdgeCases:
         
         return occupancy
 
-    def _find_neighbor_switch_pairs(self, env) -> List[tuple]:
-        """Find pairs of neighboring switches."""
-        neighbor_pairs = []
-        
-        try:
-            switches = list(env.rail_network.switches.keys())
-            
-            for i, switch1 in enumerate(switches):
-                for switch2 in switches[i+1:]:
-                    if self._are_switches_neighbors(env, switch1, switch2):
-                        neighbor_pairs.append((switch1, switch2))
-        except Exception as e:
-            print(f"Error finding neighbor pairs: {e}")
-        
-        return neighbor_pairs
-
-    def _are_switches_neighbors(self, env, switch1_id, switch2_id) -> bool:
-        """Check if two switches are direct neighbors."""
-        try:
-            rail_pieces = env.rail_network.get_rail_pieces_between_ports(switch1_id, switch2_id)
-            return rail_pieces is not None and len(rail_pieces) <= 3
-        except Exception:
-            return False
+    def _find_neighbor_switch_pairs(self, env):
+        """Find pairs of directly neighboring switches (no rail cell in between)."""
+        return env.rail_network.get_adjacent_switch_pairs()
 
 
 def run_manual_tests():
