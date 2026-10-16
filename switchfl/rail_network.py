@@ -6,9 +6,10 @@ import numpy as np
 import pandas as pd
 from flatland.envs.rail_env import RailEnv, RailEnvActions
 from flatland.envs.agent_utils import EnvAgent as TrainAgent
+from flatland.envs.step_utils.states import TrainState
 from flatland.envs.agent_utils import Grid4TransitionsEnum
 from switchfl import NodeId, PortId, TrainAgentHandle
-from switchfl.switch_agents import _Switch, get_switch_type
+from switchfl.switch_agents import _Switch, build_switch_to_rail_actions, get_switch_type
 from switchfl.utils.logging import format_logger
 from switchfl.utils.naming import get_node_id_on_port_id, switch_id2name
 from switchfl.utils.rail_graph import (
@@ -48,7 +49,9 @@ def build_switch_network(rail_network: nx.Graph) -> nx.Graph:
                 neighbor_port_df.index.item(),
             )
 
-        switch = get_switch_type(switch_graph)(node, switch_graph, port2neighbor)
+        res = build_switch_to_rail_actions(switch_graph)
+
+        switch = get_switch_type(switch_graph.nodes, res[1])(node, switch_graph, port2neighbor)
 
         switch_network.add_node(
             node,
@@ -83,7 +86,7 @@ class RailNetwork:
         self.logger = logging.getLogger(type(self).__name__)
         self.logger = format_logger(self.logger)
 
-
+        self.rail_env = rail_env
         self.switch_network: nx.Graph
 
         self.rail_graph = build_rail_graph(rail_env)
@@ -110,13 +113,24 @@ class RailNetwork:
         self._train2next_port: Dict[int, PortId] = {
             train.handle: None for train in rail_env.agents
         }
+
+        self._train2next_port_dist: Dict[int, int] = {
+            train.handle: None for train in rail_env.agents
+        }
+
         """get the next port the agent is going to enter. 
         This dictionary changes after a train transition got determined by an agent."""
         self._train_prev_port: Dict[int, PortId] = {
             train.handle: None for train in rail_env.agents
         }
+        self._train_source_port: Dict[int, PortId] = {
+            train.handle: None for train in rail_env.agents
+        }
+        
         """get the previous port the agent came from. 
         This dictionary changes after a train transition got determined by an agent."""
+
+        self.semaphores: Dict[PortId, tuple] = {}
 
     def reset(self):
         # reset all switches
@@ -127,6 +141,12 @@ class RailNetwork:
         self._train2next_port: Dict[int, PortId] = {
             handle: None for handle in self._train2next_port.keys()
         }
+
+        self._train2next_port_dist: Dict[int, int] = {
+            handle: None for handle in self._train2next_port_dist.keys()
+        }
+
+        self.semaphores = {}
 
     def get_switch_on_position(self, switch: NodeId) -> _Switch | None:
         """get switch class for the corresponding position of the switch.
@@ -159,8 +179,8 @@ class RailNetwork:
         switch = self.get_switch_on_position(node_id)
         neighbor_node_id, neighbor_port_id = switch.port2neighbor[port]
         neighbor_switch = self.get_switch_on_position(neighbor_node_id)
-        if neighbor_switch is None:
-            neighbor_port_id = None
+        # if neighbor_switch is None:
+        #     neighbor_port_id = None
         return neighbor_switch, neighbor_port_id
 
     def get_switch_on_port(self, port: PortId) -> _Switch:
@@ -205,28 +225,23 @@ class RailNetwork:
             return ports[0]
         else:
             return None
-
-    def free_semaphore(self, port: PortId):
-        """Indicate that there is not train anymore incoming from the given port
-
-        Args:
-            port (PortId): which port is free again?
+        
+    def extend_semaphores(self):
         """
-        switch = self.get_switch_on_port(port)
-        switch.free_port(port)
-        node_id = get_node_id_on_port_id(port)
-        self.switch_network.update(nodes={node_id: {"switch_cls": switch}})
-
-    def block_semaphore(self, port: PortId):
-        """Indicate that there is a train incoming from the given port
-
-        Args:
-            port (PortId): which port is going to be blocked.
+        Extend semaphores for stopped trains
         """
-        switch = self.get_switch_on_port(port)
-        switch.block_port(port)
-        node_id = get_node_id_on_port_id(port)
-        self.switch_network.update(nodes={node_id: {"switch_cls": switch}})
+        for train in self.rail_env.agents:
+            for p, (tr, _, _, _, _) in self.semaphores.items():
+                if tr == train.handle and (train.state == TrainState.STOPPED or train.state == TrainState.MALFUNCTION):
+                    distance = self.semaphores[p][4] - self.semaphores[p][3]
+                    self.semaphores[p][3] = self.rail_env._elapsed_steps
+                    self.semaphores[p][4] = self.semaphores[p][3] + distance
+
+            if train.state == TrainState.MALFUNCTION:
+                port = self._train2next_port[train.handle]
+                if port not in self.semaphores.keys():
+                    self.semaphores[port] = [train.handle, 'in', self.map_direction(port), self.rail_env._elapsed_steps,
+                                            self.rail_env._elapsed_steps + self._train2next_port_dist[train.handle]]
 
     def transition_train(
         self, train: TrainAgent, in_port: PortId, out_port: PortId
@@ -252,8 +267,9 @@ class RailNetwork:
         # find next switch with next port
         next_switch, target_port = self.get_neighbor_switch(out_port)
         # assign the semaphores
-        self.transition_semaphore(in_port, target_port)
+        self.transition_semaphore(in_port, out_port, target_port, train, next_switch)
         # the next port in self._train2next_port
+        self._train_source_port[train.handle] = in_port
         self.set_trains_next_port(train, target_port)
         self.set_trains_prev_port(train, out_port)
         self.logger.debug(
@@ -261,22 +277,148 @@ class RailNetwork:
         )
         return next_switch, target_port
 
-    def transition_semaphore(self, source: PortId, target: PortId):
+    def map_direction(self, port):
+        """map port to flatland direction"""
+        d = round((port[0] - int(port[0])) * 10)
+        if d == 1:
+            return 1
+        elif d == 2:
+            return 0
+        elif d == 3:
+            return 3
+        else:
+            return 2
+        
+    def map_inverse_direction(self, direction):
+        """map flatland direction to port direction"""
+        if direction == 1:
+            return 3
+        elif direction == 0:
+            return 4
+        elif direction == 3:
+            return 1
+        else:
+            return 2
+        
+    def transition_semaphore(self, source: PortId, out_port: PortId, target: PortId, train: TrainAgent, next_switch: _Switch):
         """handle semaphore freeing and blocking if a train is moving from the given source port (source) and moving to the outgoing port.
 
         Args:
             source (PortId): the port a train entered a switch
-            target (PortId): the port through a train will enter next
+            out_port (PortId): the port the train will leave the switch
+            target (PortId): the port though which the train will enter the next switch
+            train (TrainAgent): train entering the switch
+            next_switch (_Switch): the next switch the train will arrive at
         """
-        self.free_semaphore(source)
-        self.block_semaphore(target)
 
-        # TODO account for the case where the next switch is a simple intersections.
-        # In this case also the next semaphores have to be switched on
+        # free previous semaphores occupied by the train
+        if train.state != TrainState.MALFUNCTION:
+            for p in self.get_switch_on_port(self._train2next_port[train.handle]).get_port_nodes():
+                if p in self.semaphores and self.semaphores[p][0] == train.handle:
+                    del self.semaphores[p]
+
+            if self._train_prev_port[train.handle] is not None:
+                for p in self.get_switch_on_port(self._train_prev_port[train.handle]).get_port_nodes():
+                    if p in self.semaphores and self.semaphores[p][0] == train.handle:
+                        del self.semaphores[p]
+
+        # set new semaphores occupied by the train
+        if out_port not in self.semaphores.keys():
+            self.semaphores[out_port] = [train.handle, 'out', self.map_direction(out_port), self.rail_env._elapsed_steps,
+                                         self.rail_env._elapsed_steps + 3]
+        else: # override if semaphore has same direction
+            if self.semaphores[out_port][1] == 'out' or \
+                self.semaphores[out_port][3] > self.rail_env._elapsed_steps:
+                    self.semaphores[out_port][0] = train.handle
+                    self.semaphores[out_port][3] = self.rail_env._elapsed_steps
+                    self.semaphores[out_port][4] = self.rail_env._elapsed_steps + 3
+
+        if target not in self.semaphores.keys():
+            self.semaphores[target] = [train.handle, 'in', self.map_direction(target), self.rail_env._elapsed_steps,
+                                       self.rail_env._elapsed_steps + self.get_port_distance(out_port, target) + 1]
+        else:
+            if self.semaphores[target][1] == 'in' or \
+                self.semaphores[target][3] > self.rail_env._elapsed_steps:
+                    self.semaphores[target][0] = train.handle
+                    self.semaphores[target][3] = self.rail_env._elapsed_steps
+                    self.semaphores[target][4] = self.rail_env._elapsed_steps + self.get_port_distance(out_port, target) + 1
+
+        # find all edges related to target
+        edge_list = list(self.rail_graph.edges(target))
+
+        # find the current active edge
+        for edge in edge_list:
+            if edge[0] == out_port or edge[1] == out_port:
+                moving_edge = edge
+        edge_list.remove(moving_edge)
+
+        # if there is only one port at the end of the edge, find the next edge and set the semaphores
+        if len(edge_list) == 1:
+            unique_port = edge_list[0][0] if edge_list[0][0] != target else edge_list[0][1]
+            prox_list = list(self.rail_graph.edges(unique_port))
+            edges_toremove = []
+            for edge in prox_list:
+                if get_node_id_on_port_id(edge[0]) == next_switch.id and get_node_id_on_port_id(edge[1]) == next_switch.id:
+                    edges_toremove.append(edge)
+            for edge in edges_toremove:
+                prox_list.remove(edge)
+
+            # Set the semaphores for the edges that have been identified
+            out_edge = edge_list[0]
+            for port in out_edge:
+                if port != source and port != out_port and port != target:
+                    distance = self.get_port_distance(out_port, target) + self.get_port_distance(target, port) + 1
+                    if port not in self.semaphores.keys():
+                        self.semaphores[port] = [train.handle, 'out', self.map_direction(port), self.rail_env._elapsed_steps,
+                                                 self.rail_env._elapsed_steps + distance]
+                    else:
+                        if self.semaphores[port][1] == 'out' or \
+                            self.semaphores[port][3] > self.rail_env._elapsed_steps:
+                                self.semaphores[port] = [train.handle, 'out', self.map_direction(port), self.rail_env._elapsed_steps,
+                                                        self.rail_env._elapsed_steps + distance]
+                                
+            distance = self.get_port_distance(out_port, target) + self.get_port_distance(target, unique_port)
+            if unique_port not in self.semaphores.keys():
+                self.semaphores[unique_port] = [train.handle, 'out', self.map_direction(unique_port), self.rail_env._elapsed_steps,
+                                                self.rail_env._elapsed_steps + distance]
+            else:
+                if self.semaphores[unique_port] == 'out' or \
+                    self.semaphores[unique_port][3] > self.rail_env._elapsed_steps:
+                        self.semaphores[unique_port] = [train.handle, 'out', self.map_direction(unique_port), self.rail_env._elapsed_steps,
+                                self.rail_env._elapsed_steps + distance]  
+
+            prox_edge = prox_list[0]
+            for port in prox_edge:
+                if port != source and port != out_port and port != unique_port:
+                    distance = self.get_port_distance(out_port, target) + self.get_port_distance(target, unique_port) + \
+                        self.get_port_distance(unique_port, port) + 1        
+                    if port not in self.semaphores.keys():
+                        self.semaphores[port] = [train.handle, 'in', self.map_direction(port), self.rail_env._elapsed_steps,
+                                                 self.rail_env._elapsed_steps + distance]
+                    else:
+                        if self.semaphores[port][1] == 'in' or \
+                            self.semaphores[port][3] > self.rail_env._elapsed_steps:
+                                self.semaphores[port] = [train.handle, 'in', self.map_direction(port), self.rail_env._elapsed_steps,
+                                                            self.rail_env._elapsed_steps + distance]
+
+        for port in moving_edge:
+            if port != source and port != out_port:
+                distance = self.get_port_distance(out_port, port) + 1
+                if port not in self.semaphores.keys():
+                    self.semaphores[port] = [train.handle, 'out', self.map_direction(port), self.rail_env._elapsed_steps,
+                                             self.rail_env._elapsed_steps + distance]
+                else:
+                    if self.semaphores[port][1] == 'out' or \
+                            self.semaphores[port][3] > self.rail_env._elapsed_steps:
+                                self.semaphores[port] = [train.handle, 'out', self.map_direction(port), self.rail_env._elapsed_steps,
+                                                        self.rail_env._elapsed_steps + distance]
+
+        self.logger.debug(f"CURRENT SEMAPHORES: {self.semaphores}")
+
 
     def get_train_actions(
-        self, node: NodeId, action: int, train_agents: List[TrainAgent]
-    ) -> Tuple[TrainAgent, Dict[TrainAgentHandle, List[RailEnvActions]]]:
+        self, node: NodeId, action: int, active_train: TrainAgent
+    ) -> Tuple[int, List[RailEnvActions]]:
         """get the sequence of train actions from switch action and the train which is moving / transitioning over the switch
 
         Args:
@@ -285,13 +427,13 @@ class RailNetwork:
             train_agents (List[TrainAgent]): list of all train agents on grid
 
         Returns:
-            Tuple[TrainAgent, Dict[TrainAgentHandle, List[RailEnvActions]]]:
+            Tuple[int, List[RailEnvActions]]:
                 - train agent which is moving / crossing the switch.
                     If all currently positioned trains have to wait -> return None.
                 - For each train at the switch return actions to perform
         """
         switch = self._pos2switch[node]
-        return switch.get_train_action(action, train_agents)
+        return switch.get_train_action(action, active_train, self._train2next_port)
 
     def get_switch_names(self) -> List[str]:
         """Get the names of all switches in the network.

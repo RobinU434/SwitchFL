@@ -24,14 +24,14 @@ def build_rail_action_map(
     """
     actions = []
     target_map = []
-    for node, port_actions in graph.nodes.data("actions"):
+    for port, port_actions in graph.nodes.data("actions"):
         for target, a in port_actions.items():
-            action = {node: a}
-            target_map.append((node, target))
+            action = {port: a}
+            target_map.append((port, target))
 
             # add default stop action for all other nodes
             for other_node in graph.nodes:
-                if other_node == node:
+                if other_node == port:
                     continue
                 action[other_node] = [
                     RailEnvActions.STOP_MOVING,

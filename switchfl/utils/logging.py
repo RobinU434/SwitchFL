@@ -41,7 +41,7 @@ def format_logger(logger: logging.Logger) -> logging.Logger:
     stream_handler.setLevel(logging.DEBUG)
     stream_handler.setFormatter(CustomFormatter())
     logger.addHandler(stream_handler)
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
     return logger
 
 

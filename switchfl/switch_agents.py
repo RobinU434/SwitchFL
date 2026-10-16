@@ -9,6 +9,9 @@ from flatland.envs.agent_utils import EnvAgent as TrainAgent
 from flatland.envs.rail_env import RailEnvActions
 from gymnasium import Space, spaces
 
+from flatland.envs.step_utils.states import TrainState
+
+
 from switchfl import NodeId, PortId, TrainAgentHandle
 from switchfl.utils.rail_graph import add_rail_actions
 from switchfl.utils.switch_agent import build_rail_action_map
@@ -43,7 +46,7 @@ class _Switch(ABC):
         """Switch class for managing switch behavior and actions."""
         self.id = id
         """Unique identifier for the switch."""
-        self.switch_graph = switch_graph
+        self.switch_graph = switch_graph  # local_switch_graph
         """Graph representation of the switch."""
         self.port2neighbor = port2neighbor
         """Mapping of own port IDs to neighboring switch nodes and their ports."""
@@ -98,19 +101,41 @@ class _Switch(ABC):
             return
         self.semaphores[port] = False
 
-    def get_action_mask(self) -> np.ndarray:
+    def get_action_mask(self, port: PortId, semaphore) -> np.ndarray:
         """which actions are allowed wrt. incoming train semaphores
+
+        Args:
+            port (PortId): from which port the train is coming
+            semaphore (List[bool]): which target ports are blocked
 
         Returns:
             np.ndarray: integer array. 1: action allowed, 0: action forbidden (n_actions, )
         """
-        mask = [self.semaphores[target] for _, target in self.action_outcomes]
-        mask = (~np.array(mask)).astype(np.int8)
+        mask_0 = []
+        for source, _ in self.action_outcomes:
+            if source == port:
+                mask_0.append(1)
+            else:
+                mask_0.append(0)
+
+        mask_1 = []
+        ports = self.get_port_nodes()
+        semaphore_dict = dict(zip(ports, semaphore))
+
+        for _, target in self.action_outcomes:
+            mask_1.append(semaphore_dict[target])
+
+        # stop action is always valid
+        mask_0.append(1)
+        mask_1.append(1)
+        
+        mask = (np.array(mask_0) & np.array(mask_1)).astype(np.int8)
+
         return mask
 
     def get_train_action(
-        self, action: int, train_agents: List[TrainAgent]
-    ) -> Tuple[TrainAgent | None, Dict[TrainAgentHandle, List[RailEnvActions]]]:
+        self, action: int, active_train: int, train_to_port: Dict[TrainAgentHandle, PortId]
+    ) -> Tuple[int | None, List[RailEnvActions]]:
         """For the given trains which are about to enter this switch, return the actions sequences for each train
 
         Args:
@@ -118,35 +143,28 @@ class _Switch(ABC):
             train_agents (List[TrainAgent]): all trains on the grid
 
         Returns:
-            Tuple[TrainAgent, Dict[TrainAgentHandle, List[RailEnvActions]]]:
+            Tuple[int, List[RailEnvActions]]:
                 - train agent which is moving / crossing the switch.
                     If all currently positioned trains have to wait -> return None.
                 - For each train at the switch return actions to perform
         """
-        _, target_port = self.action_outcomes[action]
-        if self.semaphores[target_port]:
-            raise RuntimeError(
-                f"Semaphore is blocked for action: {self.action_outcomes[action]}"
-            )
 
-        result = {}
+        result = []
         moving_train = None
-        for train_agent in train_agents:
-            port_node = self._pos2port.get(train_agent.position)
-            if port_node is None:
-                # train is not at a port node
-                continue
-            actions = self.actions[action][port_node]
-            result[train_agent.handle] = actions
-            if actions[0] != RailEnvActions.STOP_MOVING:
-                moving_train = train_agent
 
-        # If only one train and it is STOP_MOVING
-        if (
-            len(result) == 1
-            and next(iter(result.values()))[0] == RailEnvActions.STOP_MOVING
-        ):
-            result[next(iter(result))] = [RailEnvActions.STOP_MOVING]
+        port_node = train_to_port.get(active_train)
+
+        # Only the train at this switch port can get an action
+        if action == len(self.actions):
+            result = [RailEnvActions.STOP_MOVING]
+        else:
+            if port_node in self.actions[action]:
+                actions = self.actions[action][port_node].copy()
+                result = actions
+            
+                if actions[0] != RailEnvActions.STOP_MOVING:
+                    moving_train = active_train
+
         return moving_train, result
 
     def get_port_nodes(self) -> List[PortId]:
@@ -183,7 +201,7 @@ class Switch1(_Switch):
         # w  w  g1
         # w  w  g2
         # can have a different permutation based on orientation
-        return spaces.Discrete(4, seed=seed)
+        return spaces.Discrete(5, seed=seed)
 
 
 # Intersection
@@ -198,7 +216,7 @@ class Switch2(_Switch):
         # ----------
         # g  w  g  w
         # w  g  w  g
-        return spaces.Discrete(2, seed=seed)
+        return spaces.Discrete(5, seed=seed)
 
 
 # Intersection with one pass
@@ -217,7 +235,7 @@ class Switch3(_Switch):
         # w  w  g  w
         # w  w  w  g1
         # w  w  w  g2
-        return spaces.Discrete(6, seed=seed)
+        return spaces.Discrete(7, seed=seed)
 
 
 # Intersection with two passes
@@ -238,20 +256,20 @@ class Switch4(_Switch):
         # w  w  g2 w
         # w  w  w  g1
         # w  w  w  g2
-        return spaces.Discrete(8, seed=seed)
+        return spaces.Discrete(9, seed=seed)
 
 
 SWITCH_AGENT_MAP = {
-    (3, 2): Switch1,
-    (4, 2): Switch2,
-    (4, 3): Switch3,
-    (4, 4): Switch4,
+    (3, 4): Switch1,
+    (4, 4): Switch2,
+    (4, 6): Switch3,
+    (4, 8): Switch4,
 }
 
 
-def get_switch_type(switch_graph: nx.Graph) -> Type[_Switch]:
-    n_gaits = len(switch_graph.nodes)
-    n_rails = len(switch_graph.edges)
+def get_switch_type(nodes, edges) -> Type[_Switch]:
+    n_gaits = len(nodes)
+    n_rails = len(edges)
     try:
         return SWITCH_AGENT_MAP[(n_gaits, n_rails)]
     except KeyError:

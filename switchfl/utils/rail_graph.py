@@ -15,6 +15,7 @@ def create_rail_graph(env: RailEnv, cmap="tab20") -> nx.Graph:
     cmap = mpl.colormaps[cmap]
 
     get_txs = env.rail.get_transitions
+    # for all the possible combinations of (row, col, dir)
     for row, col, dir in tqdm(
         product(range(env.height), range(env.width), range(4)),
         total=env.height * env.width * 4,
@@ -22,10 +23,11 @@ def create_rail_graph(env: RailEnv, cmap="tab20") -> nx.Graph:
         # [North, East, South, West]
         if bin(env.rail.get_full_transitions(row, col)).count("1") == 0:
             continue
-        for dir_idx, tx in enumerate(get_txs(row, col, dir)):
+        for dir_idx, tx in enumerate(get_txs(((row, col), dir))): # get transition
+            # tx = 0 if there is no transition, tx = 1 if there is a transition
             if tx == 0:
                 continue
-            # Find next cell coordinates
+            # Find next cell coordinates based on the exit direction dx
             next_row = row
             next_col = col
             if dir_idx == 0:  # North
@@ -52,7 +54,7 @@ def create_rail_graph(env: RailEnv, cmap="tab20") -> nx.Graph:
                 if not graph.has_node((row, col)):
                     pos = np.array(
                         [col, -row]
-                    )  # covert image pixel space to plotting space
+                    )  # convert image pixel space to plotting space
                     graph.add_node(
                         (row, col),
                         transition=bin(env.rail.get_full_transitions(row, col))[
@@ -86,22 +88,18 @@ def create_rail_graph(env: RailEnv, cmap="tab20") -> nx.Graph:
 
 
 def insert_switch_proximity_nodes(graph: nx.Graph) -> nx.Graph:
-    # get neighbors and order them:
-    # East  -> X.0
-    # North -> X.1
-    # West  -> X.2
-    # South -> X.3
+    # get neighbors and order them based on relative movement
     direction_index = {
-        (0, 1): 0.1,
-        (-1, 0): 0.2,
-        (0, -1): 0.3,
-        (1, 0): 0.4,
+        (0, 1): 0.1,  # East if you condider +1 in y direction
+        (-1, 0): 0.2,  # North if you condider -1 in x direction
+        (0, -1): 0.3,  # West if you condider -1 in y direction
+        (1, 0): 0.4,  # South if you condider +1 in x direction
     }
 
     for node in list(graph.nodes):
         node_degree = graph.degree(node)
-        if node_degree == 2:
-            # node is not a switch
+        if node_degree == 2:  # node_degree > 2 is a switch
+            # node is not a switch, it is just a transition node
             continue
 
         # add surrounding nodes
@@ -194,7 +192,7 @@ def generate_local_switch_graphs(graph: nx.Graph) -> nx.Graph:
 
     visited = set()
     while True:
-        nodes = find_degree_nodes(graph, 2, lambda x, y: x > y)
+        nodes = find_degree_nodes(graph, 2, lambda x, y: x > y)  # switches
         if (
             set(graph.nodes) == set(nodes)
             or set(nodes) == visited
@@ -209,7 +207,7 @@ def generate_local_switch_graphs(graph: nx.Graph) -> nx.Graph:
 
         # get relative positions of the subgraphs
         for current_node, next_node in combinations(switch_graph.nodes, 2):
-            if current_node == node or next_node == node:
+            if current_node == node or next_node == node:  # consider only combinations of switch proximity nodes
                 continue
             visited.add(current_node)
             visited.add(next_node)
@@ -260,7 +258,7 @@ def add_rail_actions(graph: nx.Graph) -> nx.Graph:
     >>> switch_graph.nodes.data('actions')[<source-node>][<target-node>]
 
     Args:
-        graph (nx.Graph): switch graph without actions
+        graph (nx.Graph): switch graph without actions  # LOCAL SWITCH GRAPH
 
     Returns:
         nx.Graph: switch graph with actions
