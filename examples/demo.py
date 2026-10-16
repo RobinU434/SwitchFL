@@ -53,10 +53,19 @@ def describe_decision(env, agent, obs, mask, action):
 
 
 def run_episode(env, policy, seed, show_decisions=0, frames=None):
+    if frames is not None:
+        # one env.step() can advance Flatland by several steps, so record a frame after every Flatland step
+        move_trains = env._move_trains
+
+        def move_trains_and_record():
+            move_trains()
+            frames.append(env.render())
+
+        env._move_trains = move_trains_and_record
+
     env.reset(seed=seed)
     stats = Counter()
     acting_switches = set()
-    last_t = -1
     start = time.time()
 
     for agent in env.agent_iter():
@@ -73,9 +82,8 @@ def run_episode(env, policy, seed, show_decisions=0, frames=None):
 
         env.step(action)
 
-        if frames is not None and env.rail_env._elapsed_steps != last_t:
-            last_t = env.rail_env._elapsed_steps
-            frames.append(env.render())
+    if frames is not None:
+        del env._move_trains  # back to the class method
 
     trains = env.rail_env.agents
     stats["arrived"] = sum(train.state == TrainState.DONE for train in trains)
@@ -112,6 +120,8 @@ def main():
     parser.add_argument("--cities", type=int, default=3, help="maximum number of cities")
     parser.add_argument("--show", type=int, default=15, help="print the first N decisions of the first episode")
     parser.add_argument("--gif", type=str, default=None, help="save the first episode as an animated GIF")
+    parser.add_argument("--gif-width", type=int, default=None, help="scale GIF frames to this width in pixels")
+    parser.add_argument("--gif-fps", type=float, default=8, help="GIF frames (Flatland steps) per second")
     args = parser.parse_args()
 
     logging.disable(logging.WARNING)  # the env logs a lot on INFO/DEBUG
@@ -140,7 +150,7 @@ def main():
                 print_stats(f"{name} routing, seed {seed}:", stats)
             totals.update(stats)
             if frames:
-                save_gif(frames, args.gif)
+                save_gif(frames, args.gif, args.gif_width, args.gif_fps)
         if args.episodes > 1:
             print(f"\n{name} routing over {args.episodes} episodes (seeds {args.seed}..{args.seed + args.episodes - 1}):")
             print(f"  trains delivered      {totals['arrived']}/{totals['trains']}")
@@ -148,11 +158,17 @@ def main():
             print(f"  switch decisions      {totals['decisions']} ({totals['stop']} STOP)")
 
 
-def save_gif(frames, path):
+def save_gif(frames, path, width=None, fps=8):
     from PIL import Image
 
     images = [Image.fromarray(frame) for frame in frames]
-    images[0].save(path, save_all=True, append_images=images[1:], duration=120, loop=0)
+    if width is not None:
+        height = round(images[0].height * width / images[0].width)
+        images = [image.resize((width, height), Image.LANCZOS) for image in images]
+    # one shared palette keeps the file small and the colours stable between frames
+    palette = images[0].quantize(colors=128)
+    images = [image.quantize(palette=palette, dither=Image.Dither.NONE) for image in images]
+    images[0].save(path, save_all=True, append_images=images[1:], duration=round(1000 / fps), loop=0, optimize=True)
     print(f"\nsaved {len(images)} frames to {path}")
 
 

@@ -41,6 +41,7 @@ Q_{tr.switch}(tr.obs, tr.action) += α · (y − Q_{tr.switch}(tr.obs, tr.action
 ```
 
 - `r = tr.reward` gives independent learners (local objective); `r = tr.team_reward` gives the cooperative objective. Run both and compare.
+- `SwitchCore(env, reward="arrival")` gives the vanilla sparse objective (`r = 1` when the train arrives, else 0). Bootstrapping propagates it back along the route; start with it as a sanity check, then compare it with the delay reward.
 - After STOP, the train stays in front of the same switch: `next_switch == switch` and τ is small (usually 1).
 - `stop_penalty` defaults to 1300 (the same as the env). It dominates the delay scale, so sweep it (for example 0, 10, 100, 1300).
 - Hyperparameters to start with: γ = 0.99, α = 0.1 (tabular), ε-greedy over the mask, decaying from 1.0 to 0.05.

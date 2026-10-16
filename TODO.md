@@ -4,7 +4,7 @@ Read `CLAUDE.md` first, especially the Flatland section. Setup:
 
 ```bash
 uv sync --all-extras
-uv run pytest test/ -q -W ignore   # expected: 137 passed
+uv run pytest test/ -q -W ignore   # expected: 142 passed
 ```
 
 The working tree contains uncommitted changes. Ask the user before committing or pushing.

@@ -6,16 +6,20 @@ from collections import Counter, defaultdict
 import numpy as np
 import pytest
 
+from flatland.envs.step_utils.states import TrainState
+
 from switchfl.core import SwitchCore, train_delay
 from switchfl.utils.build_env import build_standard_async_env
 
 logging.disable(logging.CRITICAL)
 
 
-def _run(seed, p_stop=0.0):
+def _run(seed, p_stop=0.0, reward="delay"):
     """Random masked policy. Returns the core, the (decision, action) pairs, all transitions and
     each train's delay at its first decision."""
-    core = SwitchCore(build_standard_async_env(height=30, width=30, max_num_cities=3, num_trains=3, seed=seed))
+    core = SwitchCore(
+        build_standard_async_env(height=30, width=30, max_num_cities=3, num_trains=3, seed=seed), reward=reward
+    )
     rng = np.random.default_rng(seed)
     decision = core.reset(seed=seed)
     first_delay = {}
@@ -80,3 +84,23 @@ def test_episode_reaches_max_steps_and_truncates():
     rail_env = core.env.rail_env
     assert rail_env._elapsed_steps == rail_env._max_episode_steps
     assert any(t.truncated for t in transitions)
+
+
+@pytest.mark.parametrize("seed,p_stop", RUNS)
+def test_arrival_reward(seed, p_stop):
+    core, decisions, transitions, _ = _run(seed, p_stop, reward="arrival")
+    rail_env = core.env.rail_env
+    arrived = {train.handle for train in rail_env.agents if train.state == TrainState.DONE}
+    # 1 exactly for the decision after which the train arrived, 0 for every other decision
+    for transition in transitions:
+        assert transition.reward == float(transition.terminal)
+    assert {t.train for t in transitions if t.reward == 1.0} == arrived & {d.train for d, _ in decisions}
+    # no STOP penalty and team rewards count arrivals
+    assert sum(t.team_reward for t in transitions) >= len({t.train for t in transitions if t.terminal})
+    assert all(t.team_reward >= 0 for t in transitions)
+
+
+def test_unknown_reward_is_rejected():
+    env = build_standard_async_env(height=30, width=30, max_num_cities=3, num_trains=3, seed=0)
+    with pytest.raises(AssertionError):
+        SwitchCore(env, reward="speed")
