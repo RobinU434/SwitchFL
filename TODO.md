@@ -4,7 +4,7 @@ Read `CLAUDE.md` first, especially the Flatland section. Setup:
 
 ```bash
 uv sync --all-extras
-uv run pytest test/ -q -W ignore   # expected: 142 passed
+uv run pytest test/ -q -W ignore   # expected: 151 passed
 ```
 
 The working tree contains uncommitted changes. Ask the user before committing or pushing.
@@ -29,6 +29,5 @@ Done: multi-holder semaphores reserving whole single-track lines (`forced_route`
 
 ## 4. Small cleanups
 
-- `requirements.txt` is stale (`flatland-rl==4.0.3`): delete it, or regenerate it from `uv export`.
 - Remove the dead per-switch `_Switch.semaphores` / `block_port` / `free_port` in `switch_agents.py` if nothing uses them any more (check with grep first).
 - `switchfl/README.md` predates the STOP action and the global semaphore redesign. Update the observation and action descriptions.

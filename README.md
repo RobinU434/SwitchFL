@@ -148,7 +148,7 @@ STOP is always allowed.
 
 ### Reward
 
-The env's reward is the change of the train's delay since its previous switch, minus a penalty (1300) for STOP while an exit was free. It is credited to the switch the train reaches next and stored per train in `env._cumulative_rewards[next_switch][train]`; PettingZoo's `env.rewards` / `env.last()` do not carry it. `env.step()` returns an info dict with `next_switch` and `arrived_trains`, which deviates from PettingZoo but gives TD methods their next state. For learning, prefer the transitions of `SwitchCore` below.
+The env's reward is the change of the train's delay since its previous switch, minus a penalty (`StandardRewardFunction(rail_env, stop_penalty=1300)`) for STOP while an exit was free. To add bonuses or other penalties, override `StandardRewardFunction.extra_reward` and pass an instance as `ASyncSwitchEnv(rail_env, reward_func=...)`. It is credited to the switch the train reaches next and stored per train in `env._cumulative_rewards[next_switch][train]`; PettingZoo's `env.rewards` / `env.last()` do not carry it. `env.step()` returns an info dict with `next_switch` and `arrived_trains`, which deviates from PettingZoo but gives TD methods their next state. For learning, prefer the transitions of `SwitchCore` below.
 
 ### Semi-MDP interface (`SwitchCore`)
 
@@ -176,6 +176,18 @@ Choose the reward with `SwitchCore(env, reward=...)`:
 | `"arrival"` | `1` if the train reached its target before its next decision, else `0` | number of trains that arrived in that time |
 
 `"arrival"` is the vanilla sparse objective: only getting trains to their destination counts.
+
+Bonuses and further penalties are added with `reward_terms`. A term is a callable that receives a `RewardContext` for the closed transition (the train, the decision, the action, `stopped_while_free`, `tau`, `terminal`, `truncated`, `delay_before` and `delay_after`) and returns a float. That float is added to `reward` but not to `team_reward`:
+
+```python
+from switchfl.core import SwitchCore, arrival_bonus, truncation_penalty
+
+core = SwitchCore(env, reward_terms=[
+    arrival_bonus(1000, on_time_only=True),   # train reached its target no later than latest_arrival
+    truncation_penalty(500),                  # episode ended before the train arrived
+    lambda ctx: -10.0 * ctx.tau if ctx.stopped_while_free else 0.0,
+])
+```
 
 ### How this differs from a standard MDP
 

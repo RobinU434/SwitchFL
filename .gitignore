@@ -7,3 +7,5 @@ experiments/
 __pycache__/
 uv.lock
 CLAUDE.md
+.pytest_cache/
+examples/*.gif

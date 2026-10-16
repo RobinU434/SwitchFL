@@ -8,17 +8,19 @@ import pytest
 
 from flatland.envs.step_utils.states import TrainState
 
-from switchfl.core import SwitchCore, train_delay
+from switchfl.core import SwitchCore, arrival_bonus, train_delay, truncation_penalty
 from switchfl.utils.build_env import build_standard_async_env
 
 logging.disable(logging.CRITICAL)
 
 
-def _run(seed, p_stop=0.0, reward="delay"):
+def _run(seed, p_stop=0.0, reward="delay", reward_terms=()):
     """Random masked policy. Returns the core, the (decision, action) pairs, all transitions and
     each train's delay at its first decision."""
     core = SwitchCore(
-        build_standard_async_env(height=30, width=30, max_num_cities=3, num_trains=3, seed=seed), reward=reward
+        build_standard_async_env(height=30, width=30, max_num_cities=3, num_trains=3, seed=seed),
+        reward=reward,
+        reward_terms=reward_terms,
     )
     rng = np.random.default_rng(seed)
     decision = core.reset(seed=seed)
@@ -104,3 +106,30 @@ def test_unknown_reward_is_rejected():
     env = build_standard_async_env(height=30, width=30, max_num_cities=3, num_trains=3, seed=0)
     with pytest.raises(AssertionError):
         SwitchCore(env, reward="speed")
+
+
+@pytest.mark.parametrize("seed,p_stop", RUNS)
+def test_reward_terms_add_bonuses_and_penalties(seed, p_stop):
+    _, _, base, _ = _run(seed, p_stop)
+    contexts = []
+    terms = [arrival_bonus(1000), truncation_penalty(500), lambda ctx: contexts.append(ctx) or -1.0]
+    _, _, shaped, _ = _run(seed, p_stop, reward_terms=terms)
+    # the terms only change `reward`, the episode itself is the same
+    assert [(t.switch, t.train, t.action, t.tau, t.team_reward) for t in base] == [
+        (t.switch, t.train, t.action, t.tau, t.team_reward) for t in shaped
+    ]
+    for b, t in zip(base, shaped):
+        assert t.reward == pytest.approx(b.reward + 1000 * t.terminal - 500 * t.truncated - 1.0)
+    assert len(contexts) == len(shaped)
+    for ctx, t in zip(contexts, shaped):
+        assert (ctx.decision.switch, ctx.train.handle, ctx.action) == (t.switch, t.train, t.action)
+        assert (ctx.tau, ctx.terminal, ctx.truncated) == (t.tau, t.terminal, t.truncated)
+
+
+def test_arrival_bonus_on_time_only():
+    contexts = []
+    _, _, transitions, _ = _run(0, reward_terms=[lambda ctx: contexts.append(ctx) or 0.0])
+    on_time = arrival_bonus(1.0, on_time_only=True)
+    for ctx in contexts:
+        expected = ctx.terminal and ctx.train.arrival_time <= ctx.train.latest_arrival
+        assert on_time(ctx) == float(expected)

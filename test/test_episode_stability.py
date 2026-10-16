@@ -13,6 +13,7 @@ import pytest
 from flatland.envs.line_generators import sparse_line_generator
 from flatland.envs.rail_env import RailEnv
 from flatland.envs.rail_generators import sparse_rail_generator
+from flatland.envs.step_utils.states import TrainState
 
 from switchfl.switch_env import ASyncSwitchEnv
 from switchfl.utils.build_env import build_standard_async_env
@@ -47,7 +48,10 @@ def test_random_episode_completes(seed):
     env = _build(seed)
     env.reset(seed=seed)
     _run_episode(env, seed)
-    assert env.terminated
+    assert env.terminated or env.truncated
+    # terminated exactly when every train arrived, otherwise Flatland's time limit cut the episode off
+    all_arrived = all(train.state == TrainState.DONE for train in env.rail_env.agents)
+    assert env.terminated == all_arrived and env.truncated == (not all_arrived)
 
 
 @pytest.mark.parametrize("seed", range(3))
@@ -55,8 +59,23 @@ def test_episode_reaches_max_episode_steps(seed):
     env = _build(seed)
     env.reset(seed=seed)
     _run_episode(env, seed, p_stop=0.9)
-    assert env.terminated
+    # the time limit is a truncation, not a termination (issue #5)
+    assert env.truncated and not env.terminated
+    assert all(env.truncations.values()) and not any(env.terminations.values())
     assert env.rail_env._elapsed_steps == env.rail_env._max_episode_steps
+    assert any(train.state != TrainState.DONE for train in env.rail_env.agents)
+
+
+def test_episode_terminates_when_all_trains_arrive():
+    from switchfl.baselines import shortest_path_policy
+
+    env = _build(0)
+    env.reset(seed=0)
+    for agent in env.agent_iter():
+        env.observe(agent)
+        env.step(shortest_path_policy(env, agent, env.active_train, env.infos[agent]["action_mask"]))
+    assert all(train.state == TrainState.DONE for train in env.rail_env.agents)
+    assert env.terminated and not env.truncated
 
 
 def test_distance_map_matches_handles():

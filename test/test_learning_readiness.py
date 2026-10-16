@@ -78,7 +78,7 @@ def test_observations_masks_and_rewards(seed, malfunctions):
         env.step(action)
         n_decisions += 1
         assert all(np.isfinite(r) for rewards in env._cumulative_rewards.values() for r in rewards.values())
-    assert env.terminated
+    assert env.terminated or env.truncated
     # one decision per train and Flatland step is the upper bound (a stopped train is asked every step)
     assert n_decisions <= env.rail_env._max_episode_steps * len(env.rail_env.agents)
 

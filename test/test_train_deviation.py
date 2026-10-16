@@ -368,7 +368,7 @@ class TestTrainDeviation:
             if len(env.active_switch_agents) > 0:
                 return env.active_switch_agents.copy()
             env._move_trains_to_switch()
-            if env.terminated:
+            if env.terminated or env.truncated:
                 break
         return []
 

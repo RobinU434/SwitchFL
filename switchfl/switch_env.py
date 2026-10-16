@@ -21,7 +21,7 @@ from switchfl.rail_network import RailNetwork
 from switchfl.utils.flatland_compat import apply_action, first_valid_move, path_exists
 from switchfl.utils.logging import format_logger, set_seed
 from switchfl.utils.naming import name2switch_id, switch_id2name, symmetric_string, get_node_id_on_port_id
-from switchfl.reward_func import StandardRewardFunction
+from switchfl.reward_func import StandardRewardFunction, _RewardFunction
 
 import time
 
@@ -98,6 +98,7 @@ class _SwitchEnv:
         render_mode: str = None,
         observer: _Observer = None,
         seed: int = None,
+        reward_func: _RewardFunction = None,
     ):
         super().__init__()
         self.logger = logging.getLogger(type(self).__name__)
@@ -115,7 +116,7 @@ class _SwitchEnv:
             rail_env.line_generator = _FeasibleLineGenerator(rail_env.line_generator)
         self.rail_network = RailNetwork(rail_env)
         self._rail_grid = rail_env.rail.grid.copy()
-        self.reward_func = StandardRewardFunction(self.rail_env)
+        self.reward_func = reward_func if reward_func is not None else StandardRewardFunction(self.rail_env)
 
         self.observer = observer if observer is not None else StandardObserver()
         self.possible_agents = self.rail_network.get_switch_names()
@@ -466,12 +467,19 @@ class _SwitchEnv:
         self.switch_entries = {}
         self._check_action_execution()
 
-        # check for all trains being done
+        # Flatland's "__all__" is also set once max_episode_steps is reached: only an episode in which
+        # every train arrived is terminated, one cut off by the time limit is truncated
         if self.train_done["__all__"]:
-            self.terminations = {
-                switch_agent: True for switch_agent in self.terminations.keys()
-            }
-            self.terminated = True
+            if all(train.state == TrainState.DONE for train in self.rail_env.agents):
+                self.terminations = {
+                    switch_agent: True for switch_agent in self.terminations.keys()
+                }
+                self.terminated = True
+            else:
+                self.truncations = {
+                    switch_agent: True for switch_agent in self.truncations.keys()
+                }
+                self.truncated = True
 
         new_trains_malfunctions = np.nonzero([v for v in self.train_info['malfunction'].values()])[0]
         self.num_malfunctions += len(set(new_trains_malfunctions).difference(set(self.malfunctions)))
@@ -479,7 +487,7 @@ class _SwitchEnv:
 
     def _move_trains_to_switch(self):
         self.logger.debug(symmetric_string("move trains", 80, "-"))
-        while len(self.active_switch_agents) == 0 and not self.terminated:
+        while len(self.active_switch_agents) == 0 and not (self.terminated or self.truncated):
             # NOTE: after resetting the environment all trains are in a standstill
             # -> they have to be moved first after the reset
             self._move_trains()
@@ -676,8 +684,9 @@ class ASyncSwitchEnv(_SwitchEnv, AECEnv):
         render_mode=None,
         observer=None,
         seed=None,
+        reward_func=None,
     ):
-        super().__init__(rail_env, max_steps, render_mode, observer, seed)
+        super().__init__(rail_env, max_steps, render_mode, observer, seed, reward_func)
 
     def agent_iter(self, max_iter=2**63):
         while not (self.terminated or self.truncated):

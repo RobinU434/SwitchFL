@@ -20,10 +20,15 @@ reward + stop penalties telescopes to D_k(first decision) - D_k(end).
 
     reward      = 1 if the train arrived at its target before its next decision point, else 0
     team_reward = number of trains that arrived between t and t'
+
+Bonuses and further penalties are added with `reward_terms=[...]`: callables that get a RewardContext
+of the closed transition and return a float that is added to `reward` (not to `team_reward`), e.g.
+
+    SwitchCore(env, reward_terms=[arrival_bonus(1000), truncation_penalty(500)])
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from flatland.envs.rail_env import RailEnv
@@ -65,10 +70,51 @@ class Transition:
 
 
 @dataclass
+class RewardContext:
+    """Everything a reward term sees when a transition closes."""
+
+    rail_env: RailEnv
+    train: Any
+    """the Flatland train (EnvAgent)"""
+    decision: Decision
+    action: int
+    stopped_while_free: bool
+    """STOP was chosen although a rail action was allowed"""
+    tau: int
+    terminal: bool
+    truncated: bool
+    delay_before: float
+    """train_delay at the decision, D_k(t)"""
+    delay_after: float
+    """train_delay when the transition closes, D_k(t')"""
+
+
+RewardTerm = Callable[[RewardContext], float]
+
+
+def arrival_bonus(bonus: float, on_time_only: bool = False) -> RewardTerm:
+    """+bonus for the decision after which the train reached its target (optionally only if not late)."""
+
+    def term(ctx: RewardContext) -> float:
+        if not ctx.terminal:
+            return 0.0
+        if on_time_only and ctx.train.arrival_time > ctx.train.latest_arrival:
+            return 0.0
+        return bonus
+
+    return term
+
+
+def truncation_penalty(penalty: float) -> RewardTerm:
+    """-penalty for the train's last decision if the episode ended before the train arrived."""
+    return lambda ctx: -penalty if ctx.truncated else 0.0
+
+
+@dataclass
 class _Pending:
     decision: Decision
     action: int
-    stop_penalty: float
+    stopped_while_free: bool
     train_delay: float
     total_delay: float
     n_arrived: int
@@ -99,17 +145,25 @@ def n_arrived(rail_env: RailEnv) -> int:
 class SwitchCore:
     REWARDS = ("delay", "arrival")
 
-    def __init__(self, env: ASyncSwitchEnv, stop_penalty: float = 1300.0, reward: str = "delay"):
+    def __init__(
+        self,
+        env: ASyncSwitchEnv,
+        stop_penalty: float = 1300.0,
+        reward: str = "delay",
+        reward_terms: Sequence[RewardTerm] = (),
+    ):
         """
         Args:
             env (ASyncSwitchEnv): the environment to wrap
             stop_penalty (float): "delay" reward only: penalty for STOP although a rail action was allowed
             reward (str): "delay" (dense, delay differences) or "arrival" (sparse, 1 when the train arrives)
+            reward_terms (Sequence[RewardTerm]): bonuses / penalties added to `reward` of every transition
         """
         assert reward in self.REWARDS, f"reward must be one of {self.REWARDS}, got {reward!r}"
         self.env = env
         self.stop_penalty = stop_penalty
         self.reward = reward
+        self.reward_terms = list(reward_terms)
         self._agent_iter = None
         self._decision: Optional[Decision] = None
         self._pending: Dict[int, _Pending] = {}
@@ -137,13 +191,11 @@ class SwitchCore:
         decision = self._decision
         assert decision.mask[action], f"action {action} is masked for {decision.switch}"
 
-        stopped_while_free = (
-            self.reward == "delay" and action == len(decision.mask) - 1 and decision.mask[:-1].any()
-        )
+        stopped_while_free = bool(action == len(decision.mask) - 1 and decision.mask[:-1].any())
         self._pending[decision.train] = _Pending(
             decision=decision,
             action=int(action),
-            stop_penalty=self.stop_penalty if stopped_while_free else 0.0,
+            stopped_while_free=stopped_while_free,
             train_delay=train_delay(self.env.rail_env, self.env.rail_env.agents[decision.train]),
             total_delay=total_delay(self.env.rail_env),
             n_arrived=n_arrived(self.env.rail_env),
@@ -183,12 +235,29 @@ class SwitchCore:
         rail_env = self.env.rail_env
         train = rail_env.agents[handle]
         arrived = train.state == TrainState.DONE
+        truncated = not arrived and next_decision is None
+        tau = (train.arrival_time if arrived else rail_env._elapsed_steps) - pending.decision.t
+        delay_after = train_delay(rail_env, train)
         if self.reward == "arrival":
             reward = float(arrived)
             team_reward = float(n_arrived(rail_env) - pending.n_arrived)
         else:
-            reward = pending.train_delay - train_delay(rail_env, train) - pending.stop_penalty
+            reward = pending.train_delay - delay_after - (self.stop_penalty if pending.stopped_while_free else 0.0)
             team_reward = pending.total_delay - total_delay(rail_env)
+        if self.reward_terms:
+            ctx = RewardContext(
+                rail_env=rail_env,
+                train=train,
+                decision=pending.decision,
+                action=pending.action,
+                stopped_while_free=pending.stopped_while_free,
+                tau=tau,
+                terminal=arrived,
+                truncated=truncated,
+                delay_before=pending.train_delay,
+                delay_after=delay_after,
+            )
+            reward += sum(float(term(ctx)) for term in self.reward_terms)
         return Transition(
             switch=pending.decision.switch,
             train=handle,
@@ -196,10 +265,10 @@ class SwitchCore:
             action=pending.action,
             reward=reward,
             team_reward=team_reward,
-            tau=(train.arrival_time if arrived else rail_env._elapsed_steps) - pending.decision.t,
+            tau=tau,
             next_switch=next_decision.switch if next_decision is not None else None,
             next_obs=next_decision.obs if next_decision is not None else None,
             next_mask=next_decision.mask if next_decision is not None else None,
             terminal=arrived,
-            truncated=not arrived and next_decision is None,
+            truncated=truncated,
         )
