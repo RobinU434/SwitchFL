@@ -12,12 +12,13 @@ from flatland.core.grid.grid4 import Grid4TransitionsEnum
 from flatland.envs.agent_utils import EnvAgent as TrainAgent
 from flatland.envs.rail_env import RailEnv, RailEnvActions
 from flatland.envs.step_utils.states import TrainState
+from flatland.envs.timetable_utils import Line
 from flatland.utils.rendertools import AgentRenderVariant
 from pettingzoo import AECEnv
 from switchfl import NodeId, TrainAgentHandle
 from switchfl.observer import StandardObserver, _Observer, compute_delay, check_route_blocked
 from switchfl.rail_network import RailNetwork
-from switchfl.utils.flatland_compat import apply_action, first_valid_move
+from switchfl.utils.flatland_compat import apply_action, first_valid_move, path_exists
 from switchfl.utils.logging import format_logger, set_seed
 from switchfl.utils.naming import name2switch_id, switch_id2name, symmetric_string, get_node_id_on_port_id
 from switchfl.reward_func import StandardRewardFunction
@@ -46,6 +47,47 @@ class _FrozenRailGenerator:
         return self.product
 
 
+class _FeasibleLineGenerator:
+    """Wraps a Flatland line generator and replaces trains that can not reach their target.
+
+    sparse_line_generator picks random city pairs. If no start orientation leads to the target,
+    Flatland silently starts the train facing North (SparseLineGen.decide_orientation), often on
+    a cell without a northern exit. On large maps with many cities the rail generator leaves some
+    city pairs unconnected, these trains have an infinite distance to their target and
+    compute_delay raises. Replacements are the next feasible trains drawn with the same np_random,
+    so a line without infeasible trains is returned unchanged and seeding stays deterministic.
+    """
+
+    def __init__(self, line_generator, max_tries: int = 100):
+        self.line_generator = line_generator
+        self.max_tries = max_tries
+
+    @staticmethod
+    def feasible(rail, waypoints) -> bool:
+        # waypoints: [[start], [intermediate stops]..., [target]], every leg must be drivable
+        for leg_start, leg_end in zip(waypoints, waypoints[1:]):
+            start, end = leg_start[0], leg_end[0]
+            if not path_exists(rail, start.position, start.direction, end.position):
+                return False
+        return True
+
+    def __call__(self, rail, num_agents, hints=None, num_resets=0, np_random=None):
+        agent_waypoints, agent_speeds = [], []
+        for _ in range(self.max_tries):
+            line = self.line_generator(rail, num_agents, hints, num_resets, np_random)
+            feasible = [h for h, waypoints in sorted(line.agent_waypoints.items()) if self.feasible(rail, waypoints)]
+            if not agent_waypoints and len(feasible) == len(line.agent_waypoints):
+                return line
+            for handle in feasible[:num_agents - len(agent_waypoints)]:
+                agent_waypoints.append(line.agent_waypoints[handle])
+                agent_speeds.append(line.agent_speeds[handle])
+            if len(agent_waypoints) == num_agents:
+                return Line(agent_waypoints=dict(enumerate(agent_waypoints)), agent_speeds=agent_speeds)
+        raise RuntimeError(
+            f"could not place {num_agents} trains with a reachable target in {self.max_tries} tries, "
+            f"only {len(agent_waypoints)} found; the rail network is probably badly connected")
+
+
 class _SwitchEnv:
     metadata = {"render_mode": ["human", "rgb_array", None]}
 
@@ -69,6 +111,8 @@ class _SwitchEnv:
         # the switch graph below is built once, so pin the rail for all future resets
         if not isinstance(rail_env.rail_generator, _FrozenRailGenerator):
             rail_env.rail_generator = _FrozenRailGenerator(rail_env.rail_generator)
+        if not isinstance(rail_env.line_generator, _FeasibleLineGenerator):
+            rail_env.line_generator = _FeasibleLineGenerator(rail_env.line_generator)
         self.rail_network = RailNetwork(rail_env)
         self._rail_grid = rail_env.rail.grid.copy()
         self.reward_func = StandardRewardFunction(self.rail_env)

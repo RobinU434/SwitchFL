@@ -61,3 +61,8 @@ def get_transitions(rail: RailGridTransitionMap, position: Position, direction: 
 def get_full_transitions(rail: RailGridTransitionMap, row: int, col: int) -> int:
     """Returns the 16 bit transition code of a cell."""
     return rail.get_full_transitions(row, col)
+
+
+def path_exists(rail: RailGridTransitionMap, position: Position, direction: int, target: Position) -> bool:
+    """Returns whether a train standing at (position, direction) can reach the target cell."""
+    return rail.check_path_exists(position, direction, target)

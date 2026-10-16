@@ -18,6 +18,7 @@ Done: multi-holder semaphores reserving whole single-track lines (`forced_route`
 ## 2. Open decisions for the user
 
 - Remaining deadlocks (shortest-path policy, 20 seeds x 6 trains: ~13/120 trains in wait-for cycles): trains facing each other at a diverging switch whose other branch is blocked. Needs global route planning; decide whether the env should do anything here or leave it to the learners (e.g. a deadlock penalty / early termination).
+  On large, dense maps it dominates: `uv run python examples/demo.py --cities 60 --trains 200 --size 120` (seed 0, shortest path) delivers only 25/200 trains in 631 Flatland steps, and 21362 of 25201 decisions are forced STOPs (no rail action allowed). Not yet analysed: how much of this is real wait-for cycles vs. trains waiting on long line reservations (`forced_route`) or occupied switch cells (`stop_forced`).
 
 ## 3. Later
 

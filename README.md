@@ -177,6 +177,26 @@ Choose the reward with `SwitchCore(env, reward=...)`:
 
 `"arrival"` is the vanilla sparse objective: only getting trains to their destination counts.
 
+### How this differs from a standard MDP
+
+In a standard MDP, one agent acts at every time step and its next state follows one step later. In SwitchFL, the step from one decision to the next looks different in five ways:
+
+| | Standard MDP | SwitchFL |
+|---|---|---|
+| **When decisions happen** | every time step | only when a train reaches a switch, one *(switch, train)* pair at a time; most switches are idle most of the time |
+| **Duration of a step** | fixed, 1 | variable: `τ` Flatland steps until the train's next decision point (or its arrival) |
+| **Discounting** | `γ` per step | `γ^τ` per transition; the reward of a transition already covers all `τ` steps (not discounted inside) |
+| **Whose next state** | the same agent's | the switch the train reaches next: a decision of switch *i* bootstraps from switch *j* |
+| **Open transitions** | one at a time | one per train, overlapping and closing in any order; several pairs can be decided in the same Flatland step, and later ones see the track reserved by earlier ones |
+
+This makes it a **semi-MDP** (decisions of variable duration). Because the next state belongs to another agent, it is closer to packet routing than to a single-agent MDP. The TD target of a transition from switch *i* to switch *j* is
+
+```
+y = r + γ^τ · max_{a' allowed} Q_j(o', a')      # y = r if the train arrived (terminal)
+```
+
+A transition cut off by the episode's time limit is `truncated`, not terminal: it has no next state, and treating it as terminal would be wrong. Since all other switches keep learning too, each switch also faces a non-stationary environment, as in any multi-agent setting.
+
 ### Framework compatibility
 
 | Framework | Fit |

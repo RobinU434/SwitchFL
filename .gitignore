@@ -5,3 +5,5 @@ experiments/
 .vscode/
 .venv/
 __pycache__/
+uv.lock
+CLAUDE.md
