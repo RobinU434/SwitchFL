@@ -4,12 +4,12 @@ Read `CLAUDE.md` first, especially the Flatland section. Setup:
 
 ```bash
 uv sync --all-extras
-uv run pytest test/ -q -W ignore   # expected: 121 passed
+uv run pytest test/ -q -W ignore   # expected: 137 passed
 ```
 
 The working tree contains uncommitted changes. Ask the user before committing or pushing.
 
-Done: the action mask forbidding entry into a switch cell another train enters or occupies (and rail actions for broken-down trains), the observation space covering the node id, the formerly skipped tests, `test/test_learning_readiness.py`, the `flatland_patch/` removal and the agent re-sort removal, the restored path-deviation check with a complete rollback of transitions cancelled by Flatland cell conflicts, the reachability action mask, the pinned rail (`_FrozenRailGenerator`), `switchfl/utils/flatland_compat.py`, the "no train" observation, the test-suite repair and the `SwitchCore` decision-event interface.
+Done: multi-holder semaphores reserving whole single-track lines (`forced_route`), the action mask forbidding entry into a switch cell another train enters or occupies (and rail actions for broken-down trains), the observation space covering the node id, the formerly skipped tests, `test/test_learning_readiness.py`, the `flatland_patch/` removal and the agent re-sort removal, the restored path-deviation check with a complete rollback of transitions cancelled by Flatland cell conflicts, the reachability action mask, the pinned rail (`_FrozenRailGenerator`), `switchfl/utils/flatland_compat.py`, the "no train" observation, the test-suite repair and the `SwitchCore` decision-event interface.
 
 ## 1. Adapters (only when needed)
 
@@ -17,7 +17,7 @@ Done: the action mask forbidding entry into a switch cell another train enters o
 
 ## 2. Open decisions for the user
 
-- Semaphore propagation along forced routes: `transition_semaphore()` reserves the out-port, the next in-port and, if the next switch offers only one way on, one more edge. A train entering a chain of n switches without an alternative exit should reserve the whole chain (head-on deadlocks otherwise). Under investigation.
+- Remaining deadlocks (shortest-path policy, 20 seeds x 6 trains: ~13/120 trains in wait-for cycles): trains facing each other at a diverging switch whose other branch is blocked. Needs global route planning; decide whether the env should do anything here or leave it to the learners (e.g. a deadlock penalty / early termination).
 
 ## 3. Later
 

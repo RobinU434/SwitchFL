@@ -18,6 +18,7 @@ import pytest
 from flatland.envs.malfunction_generators import MalfunctionParameters, ParamMalfunctionGen
 from flatland.envs.step_utils.states import TrainState
 
+from switchfl.baselines import random_policy, shortest_path_policy
 from switchfl.core import SwitchCore
 from switchfl.utils.build_env import build_standard_async_env
 from switchfl.utils.naming import name2switch_id, switch_id2name
@@ -37,27 +38,6 @@ def _build(seed, num_trains=4, size=30, cities=3, malfunctions=False):
         height=size, width=size, max_num_cities=cities, num_trains=num_trains, seed=seed,
         malfunction_generator=malfunction_generator,
     )
-
-
-def random_policy(rng):
-    def act(env, decision_switch, train, mask):
-        return int(rng.choice(np.flatnonzero(mask)))
-    return act
-
-
-def shortest_path_policy(env, decision_switch, train, mask):
-    """Allowed rail action whose exit is closest to the train's target; STOP if no rail action is allowed."""
-    rail_network = env.rail_network
-    switch = rail_network.get_switch_on_position(name2switch_id(decision_switch))
-    distance_map = env.rail_env.distance_map.get()
-    best, best_distance = len(mask) - 1, np.inf
-    for action in np.flatnonzero(mask[:-1]):
-        out_port = switch.action_outcomes[action][1]
-        row, col = rail_network.rail_graph.nodes[out_port]["rail_prev_node"]
-        distance = distance_map[train, row, col, rail_network.map_direction(out_port)]
-        if distance < best_distance:
-            best, best_distance = int(action), distance
-    return best
 
 
 def _run_core(core, seed, policy):

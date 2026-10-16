@@ -126,6 +126,17 @@ env.close()
 >
 > Please note, that we deviate slightly from the petting zoo framework as we also return the id of the next switch the train will reach after a step. This is going to help for approaches in RL which use TD learning as we need here some kind of notation for the next state. Otherwise the decision making of a switch agent will turn to a Multi-Armed-Bandit (MAB). 
 
+### Demo
+
+`examples/demo.py` runs full episodes with a baseline policy from `switchfl/baselines.py` (random routing, or shortest-path routing along Flatland's distance map). It prints the first switch decisions and a summary (trains delivered, delay, decisions, STOPs), and can save the episode as a GIF:
+
+```bash
+uv run python examples/demo.py                                 # shortest-path routing, seed 0
+uv run python examples/demo.py --policy random --seed 3
+uv run python examples/demo.py --policy compare --episodes 10  # random vs. shortest path
+uv run python examples/demo.py --gif demo.gif
+```
+
 
 ## Observation Space
 

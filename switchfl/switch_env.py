@@ -15,7 +15,7 @@ from flatland.envs.step_utils.states import TrainState
 from flatland.utils.rendertools import AgentRenderVariant
 from pettingzoo import AECEnv
 from switchfl import NodeId, TrainAgentHandle
-from switchfl.observer import StandardObserver, _Observer, compute_delay, check_port_blocked
+from switchfl.observer import StandardObserver, _Observer, compute_delay, check_route_blocked
 from switchfl.rail_network import RailNetwork
 from switchfl.utils.flatland_compat import apply_action, first_valid_move
 from switchfl.utils.logging import format_logger, set_seed
@@ -286,7 +286,7 @@ class _SwitchEnv:
             self.train_action_plan[train_agent_handle].extend(next_train_actions)
 
         if moving_train is not None:
-            port_blocked = [check_port_blocked(next_port, out_port, train_agent_handle, self.rail_network)]
+            port_blocked = [check_route_blocked(out_port, train_agent_handle, self.rail_network)]
         else:
             # every exit counts as blocked if the train could not enter the switch anyway (STOP was forced)
             switch_taken = self.stop_forced(node_id, train_agent_handle)
@@ -296,7 +296,7 @@ class _SwitchEnv:
                     out_port = p[1]
                     _, next_port = self.rail_network.get_neighbor_switch(out_port)
                     port_blocked.append(
-                        switch_taken or check_port_blocked(next_port, out_port, train_agent_handle, self.rail_network)
+                        switch_taken or check_route_blocked(out_port, train_agent_handle, self.rail_network)
                     )
 
         reward, curr_delay = self.reward_func(self.rail_env.agents[train_agent_handle],
@@ -405,20 +405,14 @@ class _SwitchEnv:
             
             # Reset semaphores of trains that have arrived
             if self.train_done[train.handle]:
-                todel=[]
-                for p, (tr, _, _, _, _) in self.rail_network.semaphores.items():
-                    if tr == train.handle:
-                        todel.append(p)
-                for p in todel:
-                    del self.rail_network.semaphores[p]
+                self.rail_network.release_train(train.handle)
 
         # Set semamphores of trains that are about to depart
         for train in self.rail_env.agents:
             if self.rail_env._elapsed_steps == train.earliest_departure - 2:
                 port = self.rail_network._train2next_port[train.handle]
-                self.rail_network.semaphores[port] = [train.handle, 'in', self.rail_network.map_direction(port),
-                                                        train.earliest_departure - 2,
-                                                        train.earliest_departure + self.rail_network._train2next_port_dist[train.handle]]
+                self.rail_network.reserve(port, 'in', train.handle, train.earliest_departure - 2,
+                                          train.earliest_departure + self.rail_network._train2next_port_dist[train.handle])
                 
         # Extend semaphores of stopped trains
         self.rail_network.extend_semaphores()
@@ -592,9 +586,8 @@ class _SwitchEnv:
         # Set semaphores of trains
         for train in self.rail_env.agents:
             port = self.rail_network._train2next_port[train.handle]
-            self.rail_network.semaphores[port] = [train.handle, 'in', self.rail_network.map_direction(port),
-                                                    train.earliest_departure - 2,
-                                                    train.earliest_departure + self.rail_network._train2next_port_dist[train.handle]]
+            self.rail_network.reserve(port, 'in', train.handle, train.earliest_departure - 2,
+                                      train.earliest_departure + self.rail_network._train2next_port_dist[train.handle])
 
     @property
     def n_steps(self) -> int:
